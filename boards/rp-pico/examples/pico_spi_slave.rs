@@ -12,6 +12,8 @@
 #![no_std]
 #![no_main]
 
+use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::digital::v2::StatefulOutputPin;
 // The macro for our start-up function
 use rp_pico::entry;
 
@@ -19,9 +21,15 @@ use rp_pico::entry;
 // be linked)
 use panic_halt as _;
 
+// Pull in any important traits
+use rp_pico::hal::prelude::*;
+
 // A shorter alias for the Peripheral Access Crate, which provides low-level
 // register access
 use rp_pico::hal::pac;
+
+// Embed the `Hz` function/trait:
+use fugit::RateExtU32;
 
 // A shorter alias for the Hardware Abstraction Layer, which provides
 // higher-level drivers.
@@ -30,12 +38,20 @@ use rp_pico::hal;
 // USB Device support
 use usb_device::{class_prelude::*, prelude::*};
 
+// Import the SPI abstraction:
+use rp_pico::hal::spi;
+
+// Import the GPIO abstraction:
+use rp_pico::hal::gpio;
+
 // USB Communications Class Device support
 use usbd_serial::SerialPort;
 
 // Used to demonstrate writing formatted strings
 use core::fmt::Write;
 use heapless::String;
+
+use embedded_hal::spi::FullDuplex;
 
 /// Entry point to our bare-metal application.
 ///
@@ -48,6 +64,7 @@ use heapless::String;
 fn main() -> ! {
     // Grab our singleton objects
     let mut pac = pac::Peripherals::take().unwrap();
+    let core = pac::CorePeripherals::take().unwrap();
 
     // Set up the watchdog driver - needed by the clock setup code
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
@@ -69,16 +86,15 @@ fn main() -> ! {
 
     let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
-    #[cfg(feature = "rp2040-e5")]
-    {
-        let sio = hal::Sio::new(pac.SIO);
-        let _pins = rp_pico::Pins::new(
-            pac.IO_BANK0,
-            pac.PADS_BANK0,
-            sio.gpio_bank0,
-            &mut pac.RESETS,
-        );
-    }
+    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+
+    let sio = hal::Sio::new(pac.SIO);
+    let pins = rp_pico::Pins::new(
+        pac.IO_BANK0,
+        pac.PADS_BANK0,
+        sio.gpio_bank0,
+        &mut pac.RESETS,
+    );
 
     // Set up the USB driver
     let usb_bus = UsbBusAllocator::new(hal::usb::UsbBus::new(
@@ -98,9 +114,29 @@ fn main() -> ! {
         .product("Serial port")
         .serial_number("TEST")
         .device_class(2) // from: https://www.usb.org/defined-class-codes
+        .max_packet_size_0(64) // (makes control transfers 8x faster)
         .build();
 
+    // Set up our SPI pins into the correct mode
+    let spi_sclk: gpio::Pin<_, gpio::FunctionSpi, gpio::PullUp> = pins.gpio2.reconfigure();
+    let spi_mosi: gpio::Pin<_, gpio::FunctionSpi, gpio::PullUp> = pins.gpio3.reconfigure();
+    let spi_miso: gpio::Pin<_, gpio::FunctionSpi, gpio::PullNone> = pins.gpio4.reconfigure();
+    let spi_cs: gpio::Pin<_, gpio::FunctionSpi, gpio::PullUp> = pins.gpio5.reconfigure();
+
+    // Create the SPI driver instance for the SPI0 device
+    let spi = spi::Spi::<_, _, _, 8>::new(pac.SPI0, (spi_mosi, spi_miso, spi_sclk));
+
+    // Exchange the uninitialised SPI driver for an initialised one
+    let mut spi = spi.init_slave(
+        &mut pac.RESETS,
+        spi::FrameFormat::MotorolaSpi(embedded_hal::spi::MODE_0),
+    );
+
+    // Set the LED to be an output
+    let mut led_pin = pins.led.into_push_pull_output();
+
     let mut said_hello = false;
+
     loop {
         // A welcome message at the beginning
         if !said_hello && timer.get_counter().ticks() >= 2_000_000 {
@@ -118,6 +154,13 @@ fn main() -> ! {
             let _ = serial.write(text.as_bytes());
         }
 
+        match spi.read() {
+            Ok(w) => {
+                serial.write(&[w]);
+            }
+            Err(_) => {}
+        }
+
         // Check for new data
         if usb_dev.poll(&mut [&mut serial]) {
             let mut buf = [0u8; 64];
@@ -131,7 +174,6 @@ fn main() -> ! {
                 Ok(count) => {
                     // Convert to upper case
                     buf.iter_mut().take(count).for_each(|b| {
-
                         if *b == 'a' as u8 {
                             rp2040_hal::rom_data::reset_to_usb_boot(0, 0);
                         }
@@ -152,6 +194,14 @@ fn main() -> ! {
                 }
             }
         }
+
+        // delay.delay_ms(100);
+
+        // if led_pin.is_set_high().unwrap() {
+        //     led_pin.set_low();
+        // } else {
+        //     led_pin.set_high();
+        // }
     }
 }
 

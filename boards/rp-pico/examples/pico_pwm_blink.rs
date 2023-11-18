@@ -35,7 +35,7 @@ use rp_pico::hal;
 const LOW: u16 = 0;
 
 // The maximum PWM value (i.e. LED brightness) we want
-const HIGH: u16 = 25000;
+const HIGH: u16 = u16::MAX;
 
 /// Entry point to our bare-metal application.
 ///
@@ -86,27 +86,36 @@ fn main() -> ! {
     // Init PWMs
     let mut pwm_slices = hal::pwm::Slices::new(pac.PWM, &mut pac.RESETS);
 
-    // Configure PWM4
-    let pwm = &mut pwm_slices.pwm4;
-    pwm.set_ph_correct();
-    pwm.enable();
+    // Configure PWM
+    let pwm1 = &mut pwm_slices.pwm1;
+    pwm1.set_ph_correct();
+    pwm1.enable();
+
+    let pwm2 = &mut pwm_slices.pwm2;
+    pwm2.set_ph_correct();
+    pwm2.enable();
 
     // Output channel B on PWM4 to the LED pin
-    let channel = &mut pwm.channel_b;
-    channel.output_to(pins.led);
+    let channel1 = &mut pwm1.channel_a;
+    channel1.output_to(pins.gpio2);
+
+    let channel2 = &mut pwm1.channel_b;
+    channel2.output_to(pins.gpio3);
 
     // Infinite loop, fading LED up and down
     loop {
         // Ramp brightness up
         for i in (LOW..=HIGH).skip(100) {
             delay.delay_us(8);
-            channel.set_duty(i);
+            channel1.set_duty(i);
+            channel2.set_duty(HIGH - i);
         }
 
         // Ramp brightness down
         for i in (LOW..=HIGH).rev().skip(100) {
             delay.delay_us(8);
-            channel.set_duty(i);
+            channel1.set_duty(i);
+            channel2.set_duty(HIGH - i);
         }
 
         delay.delay_ms(500);
